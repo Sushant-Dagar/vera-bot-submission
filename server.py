@@ -29,7 +29,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from bot import compose
-from engine.conversation import ConversationState, decide_reply
+from engine.conversation import ConversationState, decide_reply, is_auto_reply_text
 from engine.validate import validate_and_repair
 from engine import facts as f
 
@@ -50,6 +50,13 @@ sent_suppression_keys: set[str] = set()
 # merchant_id / customer_id we've ever sent a first outbound to (WhatsApp 24h
 # template-vs-freeform rule, brief §5.1)
 ever_contacted: set[str] = set()
+
+# merchant_id/customer_id -> canned-auto-reply streak, independent of
+# conversation_id. WhatsApp Business auto-replies can arrive under a fresh
+# conversation_id even when they're really the Nth canned reply from the
+# same merchant/customer, so we track this cross-conversation too and seed
+# a new ConversationState's streak from it (see /v1/reply below).
+canned_reply_streaks: dict[str, int] = {}
 
 TEAM_NAME = "Sushant Dagar"
 TEAM_MEMBERS = ["Sushant Dagar"]
@@ -208,7 +215,17 @@ async def reply(body: ReplyBody):
             body.conversation_id,
             ConversationState(conversation_id=body.conversation_id, merchant_id=body.merchant_id, customer_id=body.customer_id),
         )
+
+        # Cross-conversation canned-reply memory: seed this conversation's
+        # streak from any prior streak already tracked for this merchant/
+        # customer, so the pattern is still caught even if this message
+        # showed up under a brand-new conversation_id.
+        anchor = body.customer_id or body.merchant_id or body.conversation_id
+        if is_auto_reply_text(body.message):
+            state.auto_reply_streak = max(state.auto_reply_streak, canned_reply_streaks.get(anchor, 0))
+
         decision = decide_reply(state, body.message)
+        canned_reply_streaks[anchor] = max(canned_reply_streaks.get(anchor, 0), state.auto_reply_streak)
 
         out = {"action": decision.action, "rationale": decision.rationale}
         if decision.action == "send":
@@ -240,6 +257,7 @@ async def teardown():
         conversations.clear()
         sent_suppression_keys.clear()
         ever_contacted.clear()
+        canned_reply_streaks.clear()
     return {"status": "wiped"}
 
 
