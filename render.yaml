@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: vera-challenge-bot
+    env: docker
+    plan: free
+    healthCheckPath: /v1/healthz
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false  # optional — set in Render dashboard if you want the LLM polish pass
+      - key: LLM_MODE
+        value: "on"
